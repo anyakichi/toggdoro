@@ -1,3 +1,4 @@
+extern crate slack_hook;
 extern crate clap;
 extern crate toml;
 
@@ -31,14 +32,30 @@ use failure::Error;
 use lettre::{Transport, SendmailTransport};
 use lettre_email::Email;
 use reqwest::Client;
+use slack_hook::{Slack, PayloadBuilder};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct Config {
     version: u8,
     toggl_token: String,
     socket: Option<String>,
-    mail_notification: Option<String>,
-    desktop_notification: Option<bool>,
+    notification: Option<NotificationConfig>,
+    pomodoro: Option<PomodoroConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotificationConfig {
+    dbus: Option<bool>,
+    mail: Option<String>,
+    slack: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PomodoroConfig {
+    pomodoro_min: Option<u32>,
+    short_break_min: Option<u32>,
+    long_break_min: Option<u32>,
+    long_break_after: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -71,14 +88,11 @@ enum PomodoroMode {
 }
 
 struct PomodoroState {
-    mode: PomodoroMode,
     npomodoros: u32,
+    nnotifications: u32,
+    mode: PomodoroMode,
     finish_time: DateTime<Local>,
 }
-
-const POMODORO_WORK_MIN: i32 = 25;
-const POMODORO_SHORT_BREAK_MIN: i32 = 5;
-const POMODORO_LONG_BREAK_MIN: i32 = 15;
 
 lazy_static! {
     static ref CONFIG: RwLock<Config> =
@@ -86,36 +100,60 @@ lazy_static! {
             version: 0,
             toggl_token: "".to_string(),
             socket: None,
-            mail_notification: None,
-            desktop_notification: None,
+            notification: None,
+            pomodoro: None,
         });
 
     static ref POMODORO_STATE: RwLock<PomodoroState> =
         RwLock::new(PomodoroState {
-            mode: PomodoroMode::Idle,
             npomodoros: 0,
+            nnotifications: 0,
+            mode: PomodoroMode::Idle,
             finish_time: Local::now()
         });
 }
 
 
-fn notify(mode: &str, min: i32) {
-    notify_rust::Notification::new()
-        .summary("Toggdoro")
-        .body(&format!("{} {} minutes", mode, min))
-        .show().unwrap();
+fn notify_by_dbus(config: &Config, mode: &str, min: u32) -> Result<(), Error> {
+    if config.notification.as_ref().and_then(|n| n.dbus).unwrap_or(false) {
+        notify_rust::Notification::new()
+            .summary("Toggdoro")
+            .body(&format!("{} {} minutes", mode, min))
+            .show().map_err(|e| format_err!("{}", e))?;
+    }
+    Ok(())
 }
 
-fn sendmail(subject: &str, body: &str) -> Result<(), Error> {
-    let config = CONFIG.read().unwrap();
-
-    if let Some(ref to) = config.mail_notification {
-        let email = Email::builder()
-            .to(to as &str)
-            .subject(subject)
-            .text(body)
+fn notify_by_slack(config: &Config, mode: &str, min: u32) -> Result<(), Error> {
+    if let Some(url) = config.notification.as_ref()
+                        .and_then(|n| n.slack.as_ref()) {
+        let emoji = if mode == "Work" {
+            ":tomato:"
+        } else {
+            ":coffee:"
+        };
+        let slack = Slack::new(url as &str).map_err(|e| format_err!("{}", e))?;
+        let p = PayloadBuilder::new()
+            .username("toggdoro")
+            .icon_emoji(emoji)
+            .text(format!("{} {} minutes", mode, min))
             .build()
-            .unwrap();
+            .map_err(|e| format_err!("{}", e))?;
+
+        slack.send(&p).map_err(|e| format_err!("{}", e))?;
+    }
+    Ok(())
+}
+
+fn notify_by_mail(config: &Config, mode: &str, min: u32) -> Result<(), Error> {
+    if let Some(to) = config.notification.as_ref()
+                            .and_then(|n| n.mail.as_ref()) {
+        let email = Email::builder()
+            .from("toggdoro@sopht.jp")
+            .to(to as &str)
+            .subject(format!("Pomodoro: {} {} minutes", mode, min))
+            .text("")
+            .build()?;
 
         let mut mailer = SendmailTransport::new();
         mailer.send(email.into())?;
@@ -123,9 +161,7 @@ fn sendmail(subject: &str, body: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn api_time_entries() -> Result<Vec<TimeEntry>, Error> {
-    let config = CONFIG.read().unwrap();
-
+fn api_time_entries(config: &Config) -> Result<Vec<TimeEntry>, Error> {
     let mut res = Client::new()
         .get("https://www.toggl.com/api/v8/time_entries")
         .basic_auth(&config.toggl_token, Some("api_token"))
@@ -143,115 +179,115 @@ fn mode_of_entry(entry: &TimeEntry) -> PomodoroMode {
         .map_or(PomodoroMode::Work, |_| PomodoroMode::Break)
 }
 
-fn monitor() {
-    let interval = time::Duration::from_secs(3);
-    let mut num_dnotify = 0;    // desktop notification
-    let mut num_mnotify = 0;    // mail notification
-    loop {
-        match api_time_entries() {
-            Ok(mut entries) => {
-                let mut state = POMODORO_STATE.write().unwrap();
-                let mut history: Vec<(PomodoroMode, i32)> = Vec::new();
+fn update() -> Result<(), Error> {
+    let config = CONFIG.read().unwrap();
+    let pomodoro_min =
+        config.pomodoro.as_ref().and_then(|x| x.pomodoro_min).unwrap_or(25);
+    let short_break_min =
+        config.pomodoro.as_ref().and_then(|x| x.short_break_min).unwrap_or(5);
+    let long_break_min =
+        config.pomodoro.as_ref().and_then(|x| x.long_break_min).unwrap_or(15);
+    let long_break_after =
+        config.pomodoro.as_ref().and_then(|x| x.long_break_after).unwrap_or(4);
+    let mut entries = api_time_entries(&config)?;
+    let mut state = POMODORO_STATE.write().unwrap();
+    let mut history: Vec<(PomodoroMode, i32)> = Vec::new();
 
-                if let Some(latest_entry) = entries.pop() {
-                    if latest_entry.duration >= 0 {
-                        state.mode = PomodoroMode::Idle;
-                    } else {
-                        let mut last_start = &latest_entry.start;
-                        state.mode = mode_of_entry(&latest_entry);
+    state.mode = PomodoroMode::Idle;
 
-                        for x in entries.iter().rev() {
-                            let mode = mode_of_entry(x);
+    if let Some(latest_entry) = entries.pop() {
+        if latest_entry.duration >= 0 {
+            return Ok(());
+        }
+        let mut last_start = &latest_entry.start;
+        state.mode = mode_of_entry(&latest_entry);
 
-                            if let Some(stop) = x.stop {
-                                if (*last_start - stop).num_seconds() > 120 {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
+        for x in entries.iter().rev() {
+            let mode = mode_of_entry(x);
 
-                            match history.last_mut() {
-                                Some(ref mut v) if v.0 == mode => {
-                                    **v = (v.0, v.1 + x.duration)
-                                }
-                                _ => {
-                                    history.push((mode, x.duration))
-                                }
-                            }
+            if let Some(stop) = x.stop {
+                if (*last_start - stop).num_seconds() > 120 {
+                    break;
+                }
+            } else {
+                break;
+            }
 
-                            if let Some(&(PomodoroMode::Break, d)) = history.last() {
-                                if d >= (POMODORO_LONG_BREAK_MIN * 60) {
-                                    history.pop();
-                                    break;
-                                }
-                            }
-
-                            last_start = &x.start;
-                        }
-                        state.npomodoros = (history.len() / 2 + 1) as u32;
-                        let mut duration = {
-                            if mode_of_entry(&latest_entry) == PomodoroMode::Break {
-                                if state.npomodoros >= 4 {
-                                    POMODORO_LONG_BREAK_MIN * 60
-                                } else {
-                                    POMODORO_SHORT_BREAK_MIN * 60
-                                }
-                            } else {
-                                POMODORO_WORK_MIN * 60
-                            }
-                        };
-                        if let Some(v) = history.first() {
-                            if v.0 == mode_of_entry(&latest_entry) {
-                                duration -= v.1;
-                            }
-                        }
-                        state.finish_time = latest_entry.start +
-                            chrono::Duration::seconds(duration as i64);
-
-                        // notification
-                        let duration = state.finish_time - Local::now();
-                        let dur_secs = duration.num_seconds();
-
-                        if dur_secs < 0 {
-                            let (next_mode, next_min) = {
-                                if mode_of_entry(&latest_entry) == PomodoroMode::Break {
-                                    ("Work", POMODORO_WORK_MIN)
-                                } else {
-                                    if state.npomodoros >= 4 {
-                                        ("Break", POMODORO_LONG_BREAK_MIN)
-                                    } else {
-                                        ("Break", POMODORO_SHORT_BREAK_MIN)
-                                    }
-                                }
-                            };
-
-                            if (num_dnotify == 0) ||
-                               (num_dnotify == 1 && dur_secs < -300) ||
-                               (num_dnotify == 2 && dur_secs < -1800) {
-                                   notify(next_mode, next_min);
-                                   num_dnotify += 1;
-                            }
-
-                            if (num_mnotify == 0 && dur_secs < -30) ||
-                               (num_mnotify == 1 && dur_secs < -300) ||
-                               (num_mnotify == 2 && dur_secs < -1800) {
-                                   sendmail(&format!("Pomodoro: {} {} minutes",
-                                            next_mode, next_min), "").unwrap();
-                                   num_mnotify += 1;
-                            }
-                        } else {
-                            num_dnotify = 0;
-                            num_mnotify = 0;
-                        }
-                    }
-                } else {
-                    state.mode = PomodoroMode::Idle;
+            match history.last_mut() {
+                Some(ref mut v) if v.0 == mode => {
+                    **v = (v.0, v.1 + x.duration)
+                }
+                _ => {
+                    history.push((mode, x.duration))
                 }
             }
-            Err(error) => {
-                println!("{}", error);
+
+            if let Some(&(PomodoroMode::Break, d)) = history.last() {
+                if d >= (long_break_min as i32 * 60) {
+                    history.pop();
+                    break;
+                }
             }
+
+            last_start = &x.start;
+        }
+        state.npomodoros = (history.len() / 2 + 1) as u32;
+        let mut duration = {
+            if mode_of_entry(&latest_entry) == PomodoroMode::Break {
+                if state.npomodoros >= long_break_after {
+                    long_break_min as i32 * 60
+                } else {
+                    short_break_min as i32 * 60
+                }
+            } else {
+                pomodoro_min as i32 * 60
+            }
+        };
+        if let Some(v) = history.first() {
+            if v.0 == mode_of_entry(&latest_entry) {
+                duration -= v.1;
+            }
+        }
+        state.finish_time = latest_entry.start +
+            chrono::Duration::seconds(duration as i64);
+
+        // notification
+        let duration = state.finish_time - Local::now();
+        let dur_secs = duration.num_seconds();
+
+        if dur_secs < 0 {
+            let (next_mode, next_min) = {
+                if mode_of_entry(&latest_entry) == PomodoroMode::Break {
+                    ("Work", pomodoro_min)
+                } else {
+                    if state.npomodoros >= long_break_after {
+                        ("Break", long_break_min)
+                    } else {
+                        ("Break", short_break_min)
+                    }
+                }
+            };
+
+            if (state.nnotifications == 0) ||
+                (state.nnotifications == 1 && dur_secs < -300) ||
+                (state.nnotifications == 2 && dur_secs < -1800) {
+                        notify_by_dbus(&config, next_mode, next_min)?;
+                        notify_by_slack(&config, next_mode, next_min)?;
+                        notify_by_mail(&config, next_mode, next_min)?;
+                        state.nnotifications += 1;
+            }
+        } else {
+            state.nnotifications = 0
+        }
+    }
+    Ok(())
+}
+
+fn monitor() {
+    let interval = time::Duration::from_secs(3);
+    loop {
+        if let Err(e) = update() {
+            println!("{}", e);
         }
         thread::sleep(interval);
     }
@@ -304,28 +340,11 @@ fn main() {
                     .value_name("FILE")
                     .help("Sets config file")
                     .takes_value(true))
-            .arg(Arg::with_name("desktop_notification")
-                    .short("d")
-                    .long("desktop_notification")
-                    .help("Enable desktop notification")
-                    .takes_value(false))
-            .arg(Arg::with_name("mail_notification")
-                    .short("m")
-                    .long("mail_notification")
-                    .value_name("ADDRESS")
-                    .help("Sets mail address to notify")
-                    .takes_value(true))
             .arg(Arg::with_name("socket")
                     .short("s")
                     .long("socket")
                     .value_name("SOCKET")
                     .help("Sets UNIX domain socket path")
-                    .takes_value(true))
-            .arg(Arg::with_name("toggl_token")
-                    .short("t")
-                    .long("toggl_token")
-                    .value_name("TOKEN")
-                    .help("Sets API token of toggl")
                     .takes_value(true))
             .get_matches();
 
@@ -339,7 +358,7 @@ fn main() {
     let path =
         env::var("XDG_RUNTIME_DIR")
             .map(|x| x.to_string() + "/toggdoro.sock")
-            .unwrap_or(home.to_string() + ".toggdoro.sock");
+            .unwrap_or(home.to_string() + "/.toggdoro.sock");
 
     let listener = UnixListener::bind(&path).unwrap();
 
