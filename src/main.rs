@@ -1,30 +1,33 @@
 extern crate clap;
-#[macro_use] extern crate failure;
-#[macro_use] extern crate lazy_static;
+#[macro_use]
+extern crate failure;
+#[macro_use]
+extern crate lazy_static;
 extern crate lettre;
 extern crate lettre_email;
 extern crate notify_rust;
 extern crate regex;
 extern crate reqwest;
 extern crate slack_hook;
-#[macro_use] extern crate serde_derive;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_json;
 extern crate toml;
 
-use std::{env, fs, thread, process, time};
 use std::fs::File;
-use std::io::BufReader;
 use std::io::prelude::*;
+use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::RwLock;
+use std::{env, fs, process, thread, time};
 
-use regex::Regex;
 use chrono::{DateTime, Local};
-use clap::{Arg, App};
+use clap::{App, Arg};
 use failure::Error;
-use lettre::{Transport, SendmailTransport};
+use lettre::{SendmailTransport, Transport};
 use lettre_email::Email;
-use slack_hook::{Slack, PayloadBuilder};
+use regex::Regex;
+use slack_hook::{PayloadBuilder, Slack};
 
 use crate::toggl::TimeEntry;
 
@@ -66,10 +69,18 @@ struct PomodoroConfig {
     long_break_after: u32,
 }
 
-fn default_pomodoro_min() -> u32 { 25 }
-fn default_short_break_min() -> u32 { 5 }
-fn default_long_break_min() -> u32 { 15 }
-fn default_long_break_after() -> u32 { 4 }
+fn default_pomodoro_min() -> u32 {
+    25
+}
+fn default_short_break_min() -> u32 {
+    5
+}
+fn default_long_break_min() -> u32 {
+    15
+}
+fn default_long_break_after() -> u32 {
+    4
+}
 
 impl Default for PomodoroConfig {
     fn default() -> Self {
@@ -144,14 +155,18 @@ mod toggl {
     }
 
     pub fn new(token: String) -> Toggl {
-        Toggl { token, client: reqwest::Client::new() }
+        Toggl {
+            token,
+            client: reqwest::Client::new(),
+        }
     }
 
     pub mod api {
         use crate::toggl::*;
 
         pub fn time_entries(toggl: &Toggl) -> Result<Vec<TimeEntry>, Error> {
-            let mut res = toggl.client
+            let mut res = toggl
+                .client
                 .get("https://www.toggl.com/api/v8/time_entries")
                 .basic_auth(&toggl.token, Some("api_token"))
                 .send()?;
@@ -161,21 +176,18 @@ mod toggl {
     }
 }
 
-
 lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Default::default());
-
-    static ref POMODORO_STATE: RwLock<PomodoroState> =
-        RwLock::new(Default::default());
+    static ref POMODORO_STATE: RwLock<PomodoroState> = RwLock::new(Default::default());
 }
-
 
 fn notify_by_dbus(config: &Config, msg: &str) -> Result<(), Error> {
     if config.notification.dbus {
         notify_rust::Notification::new()
             .summary("Toggdoro")
             .body(msg)
-            .show().map_err(|e| format_err!("{}", e))?;
+            .show()
+            .map_err(|e| format_err!("{}", e))?;
     }
     Ok(())
 }
@@ -217,7 +229,7 @@ fn notify_by_mail(config: &Config, msg: &str) -> Result<(), Error> {
 
 fn mode_of_entry(entry: &TimeEntry) -> PomodoroMode {
     if entry.description == "Pomodoro Break" {
-        return PomodoroMode::Break
+        return PomodoroMode::Break;
     }
     if entry.tags.iter().any(|x| x == "pomodoro-break") {
         PomodoroMode::Break
@@ -258,10 +270,11 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
                 if mode_of_entry(x) == PomodoroMode::Break {
                     continue;
                 }
-                if latest_entry.description == x.description &&
-                   latest_entry.pid == x.pid &&
-                   latest_entry.tags == x.tags {
-                       extra_task_duration += x.duration;
+                if latest_entry.description == x.description
+                    && latest_entry.pid == x.pid
+                    && latest_entry.tags == x.tags
+                {
+                    extra_task_duration += x.duration;
                 } else {
                     break;
                 }
@@ -280,12 +293,8 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
             }
 
             match history.last_mut() {
-                Some(ref mut v) if v.0 == mode => {
-                    **v = (v.0, v.1 + x.duration)
-                }
-                _ => {
-                    history.push((mode, x.duration))
-                }
+                Some(ref mut v) if v.0 == mode => **v = (v.0, v.1 + x.duration),
+                _ => history.push((mode, x.duration)),
             }
 
             if let Some(&(PomodoroMode::Break, d)) = history.last() {
@@ -314,11 +323,11 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
                 duration -= v.1;
             }
         }
-        state.finish_time = latest_entry.start +
-            chrono::Duration::seconds(duration as i64);
-        state.task_finish_time = task_min(&latest_entry)?
-            .map(|x| latest_entry.start + chrono::Duration::seconds(x as i64 * 60 -
-            extra_task_duration as i64));
+        state.finish_time = latest_entry.start + chrono::Duration::seconds(duration as i64);
+        state.task_finish_time = task_min(&latest_entry)?.map(|x| {
+            latest_entry.start
+                + chrono::Duration::seconds(x as i64 * 60 - extra_task_duration as i64)
+        });
 
         // notification
         let now = Local::now();
@@ -330,22 +339,25 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
                 if mode_of_entry(&latest_entry) == PomodoroMode::Break {
                     format!("Work {} min", pomodoro_config.pomodoro_min)
                 } else {
-                    format!("Break {} min",
-                            if state.npomodoros >= pomodoro_config.long_break_after {
-                                pomodoro_config.long_break_min
-                            } else {
-                                pomodoro_config.short_break_min
-                            })
+                    format!(
+                        "Break {} min",
+                        if state.npomodoros >= pomodoro_config.long_break_after {
+                            pomodoro_config.long_break_min
+                        } else {
+                            pomodoro_config.short_break_min
+                        }
+                    )
                 }
             };
 
-            if (state.nnotifications == 0) ||
-                (state.nnotifications == 1 && dur_secs < -300) ||
-                (state.nnotifications == 2 && dur_secs < -1800) {
-                        notify_by_dbus(&config, &msg)?;
-                        notify_by_slack(&config, &msg)?;
-                        notify_by_mail(&config, &msg)?;
-                        state.nnotifications += 1;
+            if (state.nnotifications == 0)
+                || (state.nnotifications == 1 && dur_secs < -300)
+                || (state.nnotifications == 2 && dur_secs < -1800)
+            {
+                notify_by_dbus(&config, &msg)?;
+                notify_by_slack(&config, &msg)?;
+                notify_by_mail(&config, &msg)?;
+                state.nnotifications += 1;
             }
             state.ntnotifications = 0;
         } else {
@@ -355,13 +367,14 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
                 let task_duration = task_finish_time - now;
                 let task_dur_secs = task_duration.num_seconds();
 
-                if (state.ntnotifications == 0 && task_dur_secs < 0) ||
-                   (state.ntnotifications == 1 && task_dur_secs < -300) ||
-                   (state.ntnotifications == 2 && task_dur_secs < -1800) {
-                       notify_by_dbus(&config, "Switch to the next task")?;
-                       notify_by_slack(&config, "Switch to the next task")?;
-                       notify_by_mail(&config, "Switch to the next task")?;
-                       state.ntnotifications += 1;
+                if (state.ntnotifications == 0 && task_dur_secs < 0)
+                    || (state.ntnotifications == 1 && task_dur_secs < -300)
+                    || (state.ntnotifications == 2 && task_dur_secs < -1800)
+                {
+                    notify_by_dbus(&config, "Switch to the next task")?;
+                    notify_by_slack(&config, "Switch to the next task")?;
+                    notify_by_mail(&config, "Switch to the next task")?;
+                    state.ntnotifications += 1;
                 }
             } else {
                 state.ntnotifications = 0;
@@ -392,41 +405,44 @@ fn handle_connection(mut stream: UnixStream) {
         mode => {
             let now = Local::now();
             let duration = state.finish_time - now;
-            let (fgbg, min, sec) =
-                if duration.num_seconds() >= 0 {
+            let (fgbg, min, sec) = if duration.num_seconds() >= 0 {
+                ("fg", duration.num_minutes(), duration.num_seconds() % 60)
+            } else {
+                ("bg", -duration.num_minutes(), -duration.num_seconds() % 60)
+            };
+            let color = if mode == PomodoroMode::Work {
+                "colour203"
+            } else {
+                "colour75"
+            };
+            write!(
+                stream,
+                "#[{}={}]{}|{:02}:{:02}#[default]",
+                fgbg, color, state.npomodoros, min, sec
+            );
+
+            if let Some(finish_time) = state.task_finish_time {
+                let duration = finish_time - now;
+                let (fgbg, min, sec) = if duration.num_seconds() >= 0 {
                     ("fg", duration.num_minutes(), duration.num_seconds() % 60)
                 } else {
                     ("bg", -duration.num_minutes(), -duration.num_seconds() % 60)
                 };
-            let color =
-                if mode == PomodoroMode::Work {
+                let color = if mode == PomodoroMode::Work {
                     "colour203"
                 } else {
                     "colour75"
                 };
-            write!(stream, "#[{}={}]{}|{:02}:{:02}#[default]",
-                     fgbg, color, state.npomodoros, min, sec);
-
-            if let Some(finish_time) = state.task_finish_time {
-                let duration = finish_time - now;
-                let (fgbg, min, sec) =
-                    if duration.num_seconds() >= 0 {
-                        ("fg", duration.num_minutes(), duration.num_seconds() % 60)
-                    } else {
-                        ("bg", -duration.num_minutes(), -duration.num_seconds() % 60)
-                    };
-                let color =
-                    if mode == PomodoroMode::Work {
-                        "colour203"
-                    } else {
-                        "colour75"
-                    };
-                write!(stream, "[#[{}={}]{:02}:{:02}#[default]]",
-                    fgbg, color, min, sec);
+                write!(
+                    stream,
+                    "[#[{}={}]{:02}:{:02}#[default]]",
+                    fgbg, color, min, sec
+                );
             }
             writeln!(stream, "")
         }
-    }.unwrap();
+    }
+    .unwrap();
 }
 
 fn load_config(path: &str) {
@@ -441,46 +457,49 @@ fn load_config(path: &str) {
 }
 
 fn main() {
-    let matches =
-        App::new("toggdoro")
-            .version("0.1")
-            .author("INAJIMA Daisuke <inajima@sopht.jp>")
-            .about("Pomodoro timer with toggl")
-            .arg(Arg::with_name("config")
-                    .short("c")
-                    .long("config")
-                    .value_name("FILE")
-                    .help("Sets config file")
-                    .takes_value(true))
-            .arg(Arg::with_name("socket")
-                    .short("s")
-                    .long("socket")
-                    .value_name("SOCKET")
-                    .help("Sets UNIX domain socket path")
-                    .takes_value(true))
-            .get_matches();
+    let matches = App::new("toggdoro")
+        .version("0.1")
+        .author("INAJIMA Daisuke <inajima@sopht.jp>")
+        .about("Pomodoro timer with toggl")
+        .arg(
+            Arg::with_name("config")
+                .short("c")
+                .long("config")
+                .value_name("FILE")
+                .help("Sets config file")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("socket")
+                .short("s")
+                .long("socket")
+                .value_name("SOCKET")
+                .help("Sets UNIX domain socket path")
+                .takes_value(true),
+        )
+        .get_matches();
 
     let home = env::var("HOME").unwrap_or(".".to_string());
-    let config_path = matches.value_of("config")
+    let config_path = matches
+        .value_of("config")
         .map(|x| x.to_string())
         .unwrap_or(home.to_string() + "/.config/toggdoro/config.toml");
 
     load_config(&config_path);
 
-    let path =
-        env::var("XDG_RUNTIME_DIR")
-            .map(|x| x.to_string() + "/toggdoro.sock")
-            .unwrap_or(home.to_string() + "/.toggdoro.sock");
+    let path = env::var("XDG_RUNTIME_DIR")
+        .map(|x| x.to_string() + "/toggdoro.sock")
+        .unwrap_or(home.to_string() + "/.toggdoro.sock");
 
     let listener = UnixListener::bind(&path).unwrap();
 
     let _ = unsafe {
-        signal_hook::register(signal_hook::SIGINT,
-                              move || {
-                                  fs::remove_file(&path).unwrap();
-                                  process::exit(130);
-                              })
-    }.unwrap();
+        signal_hook::register(signal_hook::SIGINT, move || {
+            fs::remove_file(&path).unwrap();
+            process::exit(130);
+        })
+    }
+    .unwrap();
 
     let _ = thread::spawn(|| monitor());
 
