@@ -408,33 +408,33 @@ fn monitor() {
     }
 }
 
-fn handle_connection(mut stream: UnixStream) {
+fn handle_connection(mut stream: UnixStream) -> Result<(), Error> {
     let mut tt = TinyTemplate::new();
-    tt.add_template("Idle", "idle");
+    tt.add_template("Idle", "idle")?;
     tt.add_template(
         "Work",
         "<span foreground=\"#ff6347\"> {count}[{remaining_time_abs}{task}]</span>",
-    );
+    )?;
     tt.add_template(
         "Break",
         "<span foreground=\"#47beff\"> {count}[{remaining_time_abs}{task}]</span>",
-    );
-    tt.add_template("overWork", "<span foreground=\"#ff6347\"> {count}[<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>{task}]</span>");
-    tt.add_template("overBreak", "<span foreground=\"#47beff\"> {count}[<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>{task}]</span>");
-    tt.add_template("WorkTask", "|{remaining_time_abs}");
-    tt.add_template("BreakTask", "|{remaining_time_abs}");
+    )?;
+    tt.add_template("overWork", "<span foreground=\"#ff6347\"> {count}[<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>{task}]</span>")?;
+    tt.add_template("overBreak", "<span foreground=\"#47beff\"> {count}[<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>{task}]</span>")?;
+    tt.add_template("WorkTask", "|{remaining_time_abs}")?;
+    tt.add_template("BreakTask", "|{remaining_time_abs}")?;
     tt.add_template(
         "overWorkTask",
         "|<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>",
-    );
+    )?;
     tt.add_template(
         "overBreakTask",
         "|<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>",
-    );
+    )?;
 
     let state = POMODORO_STATE.read().unwrap();
     match state.mode {
-        PomodoroMode::Idle => writeln!(stream, "idle"),
+        PomodoroMode::Idle => writeln!(stream, "idle")?,
         mode => {
             let now = Local::now();
 
@@ -478,24 +478,27 @@ fn handle_connection(mut stream: UnixStream) {
                 task: task,
             };
 
-            writeln!(stream, "{}", tt.render(&template, &context).unwrap())
+            writeln!(stream, "{}", tt.render(&template, &context)?)?;
         }
-    }
-    .unwrap();
+    };
+
+    Ok(())
 }
 
-fn load_config(path: &str) {
+fn load_config(path: &str) -> Result<(), Error> {
     let mut c = CONFIG.write().unwrap();
 
-    let file = File::open(path).unwrap();
+    let file = File::open(path)?;
     let mut buf_reader = BufReader::new(file);
     let mut contents = String::new();
-    buf_reader.read_to_string(&mut contents).unwrap();
-    let config = toml::from_str(&contents).unwrap();
+    buf_reader.read_to_string(&mut contents)?;
+    let config = toml::from_str(&contents)?;
     *c = config;
+
+    Ok(())
 }
 
-fn main() {
+fn main() -> Result<(), Error> {
     let matches = App::new("toggdoro")
         .version("0.1")
         .author("INAJIMA Daisuke <inajima@sopht.jp>")
@@ -524,21 +527,20 @@ fn main() {
         .map(|x| x.to_string())
         .unwrap_or(home.to_string() + "/.config/toggdoro/config.toml");
 
-    load_config(&config_path);
+    load_config(&config_path)?;
 
     let path = env::var("XDG_RUNTIME_DIR")
         .map(|x| x.to_string() + "/toggdoro.sock")
         .unwrap_or(home.to_string() + "/.toggdoro.sock");
 
-    let listener = UnixListener::bind(&path).unwrap();
+    let listener = UnixListener::bind(&path)?;
 
     let _ = unsafe {
         signal_hook::register(signal_hook::SIGINT, move || {
             fs::remove_file(&path).unwrap();
             process::exit(130);
         })
-    }
-    .unwrap();
+    }?;
 
     let _ = thread::spawn(|| monitor());
 
@@ -552,4 +554,6 @@ fn main() {
             }
         }
     }
+
+    Ok(())
 }
