@@ -12,6 +12,7 @@ extern crate slack_hook;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
+extern crate tinytemplate;
 extern crate toml;
 
 use std::fs::File;
@@ -28,6 +29,7 @@ use lettre::{SendmailTransport, Transport};
 use lettre_email::Email;
 use regex::Regex;
 use slack_hook::{PayloadBuilder, Slack};
+use tinytemplate::TinyTemplate;
 
 use crate::toggl::TimeEntry;
 
@@ -52,6 +54,14 @@ struct NotificationConfig {
     mail: Option<String>,
 
     slack: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Context {
+    count: u32,
+    remaining_time: String,
+    remaining_time_abs: String,
+    task: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,47 +409,76 @@ fn monitor() {
 }
 
 fn handle_connection(mut stream: UnixStream) {
+    let mut tt = TinyTemplate::new();
+    tt.add_template("Idle", "idle");
+    tt.add_template(
+        "Work",
+        "<span foreground=\"#ff6347\"> {count}[{remaining_time_abs}{task}]</span>",
+    );
+    tt.add_template(
+        "Break",
+        "<span foreground=\"#47beff\"> {count}[{remaining_time_abs}{task}]</span>",
+    );
+    tt.add_template("overWork", "<span foreground=\"#ff6347\"> {count}[<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>{task}]</span>");
+    tt.add_template("overBreak", "<span foreground=\"#47beff\"> {count}[<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>{task}]</span>");
+    tt.add_template("WorkTask", "|{remaining_time_abs}");
+    tt.add_template("BreakTask", "|{remaining_time_abs}");
+    tt.add_template(
+        "overWorkTask",
+        "|<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>",
+    );
+    tt.add_template(
+        "overBreakTask",
+        "|<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>",
+    );
+
     let state = POMODORO_STATE.read().unwrap();
     match state.mode {
         PomodoroMode::Idle => writeln!(stream, "idle"),
         mode => {
             let now = Local::now();
-            let duration = state.finish_time - now;
-            let (fgbg, min, sec) = if duration.num_seconds() >= 0 {
-                ("fg", duration.num_minutes(), duration.num_seconds() % 60)
-            } else {
-                ("bg", -duration.num_minutes(), -duration.num_seconds() % 60)
-            };
-            let color = if mode == PomodoroMode::Work {
-                "colour203"
-            } else {
-                "colour75"
-            };
-            write!(
-                stream,
-                "#[{}={}]{}|{:02}:{:02}#[default]",
-                fgbg, color, state.npomodoros, min, sec
-            );
 
-            if let Some(finish_time) = state.task_finish_time {
+            let task = if let Some(finish_time) = state.task_finish_time {
                 let duration = finish_time - now;
-                let (fgbg, min, sec) = if duration.num_seconds() >= 0 {
-                    ("fg", duration.num_minutes(), duration.num_seconds() % 60)
+                let timeover = duration.num_seconds() < 0;
+                let template = if timeover {
+                    format!("over{:?}Task", mode)
                 } else {
-                    ("bg", -duration.num_minutes(), -duration.num_seconds() % 60)
+                    format!("{:?}Task", mode)
                 };
-                let color = if mode == PomodoroMode::Work {
-                    "colour203"
-                } else {
-                    "colour75"
+                let mins = duration.num_minutes();
+                let secs = duration.num_seconds().abs() % 60;
+
+                let context = Context {
+                    count: state.npomodoros,
+                    remaining_time: format!("{:02}:{:02}", mins, secs),
+                    remaining_time_abs: format!("{:02}:{:02}", mins.abs(), secs),
+                    task: "".to_string(),
                 };
-                write!(
-                    stream,
-                    "[#[{}={}]{:02}:{:02}#[default]]",
-                    fgbg, color, min, sec
-                );
-            }
-            writeln!(stream, "")
+
+                tt.render(&template, &context).unwrap()
+            } else {
+                "".to_string()
+            };
+
+            let duration = state.finish_time - now;
+            let timeover = duration.num_seconds() < 0;
+            let template = if timeover {
+                format!("over{:?}", mode)
+            } else {
+                format!("{:?}", mode)
+            };
+            let mins = duration.num_minutes();
+            let secs = duration.num_seconds().abs() % 60;
+
+            let context = Context {
+                count: state.npomodoros,
+                remaining_time: format!("{:02}:{:02}", mins, secs),
+                remaining_time_abs: format!("{:02}:{:02}", mins.abs(), secs),
+                task: task,
+            };
+
+            writeln!(stream, "{}", tt.render(&template, &context).unwrap())
         }
     }
     .unwrap();
