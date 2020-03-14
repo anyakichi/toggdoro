@@ -44,6 +44,9 @@ struct Config {
 
     #[serde(default)]
     pomodoro: PomodoroConfig,
+
+    #[serde(default)]
+    format: FormatConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -54,14 +57,6 @@ struct NotificationConfig {
     mail: Option<String>,
 
     slack: Option<String>,
-}
-
-#[derive(Serialize)]
-struct Context {
-    count: u32,
-    remaining_time: String,
-    remaining_time_abs: String,
-    task: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +98,68 @@ impl Default for PomodoroConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct FormatConfig {
+    #[serde(default = "default_format_idle")]
+    idle: String,
+
+    #[serde(default = "default_format_work")]
+    work: String,
+
+    #[serde(default = "default_format_break")]
+    r#break: String,
+
+    #[serde(default = "default_format_work")]
+    overwork: String,
+
+    #[serde(default = "default_format_break")]
+    overbreak: String,
+
+    #[serde(default = "default_format_task")]
+    task_work: String,
+
+    #[serde(default = "default_format_task")]
+    task_break: String,
+
+    #[serde(default = "default_format_task")]
+    task_overwork: String,
+
+    #[serde(default = "default_format_task")]
+    task_overbreak: String,
+}
+
+impl Default for FormatConfig {
+    fn default() -> Self {
+        Self {
+            idle: default_format_idle(),
+            work: default_format_work(),
+            r#break: default_format_break(),
+            overwork: default_format_work(),
+            overbreak: default_format_break(),
+            task_work: default_format_task(),
+            task_break: default_format_task(),
+            task_overwork: default_format_task(),
+            task_overbreak: default_format_task(),
+        }
+    }
+}
+
+fn default_format_idle() -> String {
+    "idle".to_string()
+}
+
+fn default_format_work() -> String {
+    "Work {count}[{remaining_time}{task}]".to_string()
+}
+
+fn default_format_break() -> String {
+    "Break {count}[{remaining_time}{task}]".to_string()
+}
+
+fn default_format_task() -> String {
+    "|{remaining_time}".to_string()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PomodoroMode {
     Idle,
@@ -130,6 +187,14 @@ impl Default for PomodoroState {
             task_finish_time: None,
         }
     }
+}
+
+#[derive(Serialize)]
+struct Context {
+    count: u32,
+    remaining_time: String,
+    remaining_time_abs: String,
+    task: String,
 }
 
 mod toggl {
@@ -409,32 +474,22 @@ fn monitor() {
 }
 
 fn handle_connection(mut stream: UnixStream) -> Result<(), Error> {
+    let config = CONFIG.read().unwrap();
+
     let mut tt = TinyTemplate::new();
-    tt.add_template("Idle", "idle")?;
-    tt.add_template(
-        "Work",
-        "<span foreground=\"#ff6347\"> {count}[{remaining_time_abs}{task}]</span>",
-    )?;
-    tt.add_template(
-        "Break",
-        "<span foreground=\"#47beff\"> {count}[{remaining_time_abs}{task}]</span>",
-    )?;
-    tt.add_template("overWork", "<span foreground=\"#ff6347\"> {count}[<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>{task}]</span>")?;
-    tt.add_template("overBreak", "<span foreground=\"#47beff\"> {count}[<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>{task}]</span>")?;
-    tt.add_template("WorkTask", "|{remaining_time_abs}")?;
-    tt.add_template("BreakTask", "|{remaining_time_abs}")?;
-    tt.add_template(
-        "overWorkTask",
-        "|<span foreground=\"#ffffff\" background=\"#cc4f39\">{remaining_time_abs}</span>",
-    )?;
-    tt.add_template(
-        "overBreakTask",
-        "|<span foreground=\"#ffffff\" background=\"#397dcc\">{remaining_time_abs}</span>",
-    )?;
+
+    tt.add_template("Work", &config.format.work)?;
+    tt.add_template("Break", &config.format.r#break)?;
+    tt.add_template("overWork", &config.format.overwork)?;
+    tt.add_template("overBreak", &config.format.overbreak)?;
+    tt.add_template("WorkTask", &config.format.task_work)?;
+    tt.add_template("BreakTask", &config.format.task_break)?;
+    tt.add_template("overWorkTask", &config.format.task_overwork)?;
+    tt.add_template("overBreakTask", &config.format.task_overbreak)?;
 
     let state = POMODORO_STATE.read().unwrap();
     match state.mode {
-        PomodoroMode::Idle => writeln!(stream, "idle")?,
+        PomodoroMode::Idle => writeln!(stream, "{}", &config.format.idle)?,
         mode => {
             let now = Local::now();
 
