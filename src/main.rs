@@ -23,6 +23,7 @@ use chrono::{DateTime, Local};
 use clap::{App, Arg};
 use failure::Error;
 use regex::Regex;
+use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
 use tinytemplate::TinyTemplate;
 
 use toggdoro::config::{Config, CONFIG};
@@ -353,12 +354,13 @@ fn main() -> Result<(), Error> {
 
     let listener = UnixListener::bind(&path)?;
 
-    let _ = unsafe {
-        signal_hook::register(signal_hook::SIGINT, move || {
+    let signals = Signals::new(&[SIGTERM, SIGINT])?;
+    thread::spawn(move || {
+        for _sig in signals.forever() {
             fs::remove_file(&path).unwrap();
             process::exit(130);
-        })
-    }?;
+        }
+    });
 
     let _ = thread::spawn(|| monitor());
 
