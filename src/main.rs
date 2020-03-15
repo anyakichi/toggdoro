@@ -31,7 +31,7 @@ use toggdoro::notifier::mail::MailNotifier;
 use toggdoro::notifier::slack::SlackNotifier;
 use toggdoro::notifier::Notifier;
 use toggdoro::pomodoro::PomodoroMode;
-use toggdoro::toggl::{self, TimeEntry};
+use toggdoro::toggl::{Toggl, TimeEntry};
 
 struct PomodoroState {
     npomodoros: u32,
@@ -68,7 +68,7 @@ lazy_static! {
 }
 
 fn mode_of_entry(entry: &TimeEntry) -> PomodoroMode {
-    if entry.description == Some("Pomodoro Break".to_string()) {
+    if entry.description == "Pomodoro Break" {
         return PomodoroMode::Break;
     }
     if entry.tags.iter().any(|x| x == "pomodoro-break") {
@@ -88,10 +88,10 @@ fn task_min(entry: &TimeEntry) -> Result<Option<u32>, Error> {
     Ok(None)
 }
 
-fn update(toggl: &toggl::Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error> {
+fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error> {
     let config = CONFIG.read().unwrap();
     let pomodoro_config = &config.pomodoro;
-    let mut entries = toggl::api::time_entries(&toggl)?;
+    let mut entries = toggl.time_entries()?;
     let mut state = POMODORO_STATE.write().unwrap();
     let mut history: Vec<(PomodoroMode, i32)> = Vec::new();
 
@@ -228,7 +228,7 @@ fn monitor() {
     let config = CONFIG.read().unwrap();
 
     let interval = time::Duration::from_secs(3);
-    let toggl = { toggl::new(config.toggl_token.to_string()) };
+    let toggl = Toggl::new(config.toggl_token.to_string());
     let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
     if config.notification.dbus {
         notifiers.push(Box::new(DBusNotifier::new().unwrap()));

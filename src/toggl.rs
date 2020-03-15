@@ -16,7 +16,8 @@ pub struct TimeEntry {
     pub start: DateTime<Local>,
     pub stop: Option<DateTime<Local>>,
     pub duration: i32,
-    pub description: Option<String>,
+    #[serde(default)]
+    pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
     pub duronly: bool,
@@ -29,23 +30,22 @@ pub struct TimeEntryData {
     pub data: Option<TimeEntry>,
 }
 
-pub fn new(token: String) -> Toggl {
-    Toggl {
-        token,
-        client: reqwest::Client::new(),
+impl Toggl {
+    pub fn new(token: String) -> Self {
+        Toggl {
+            token,
+            client: reqwest::Client::new(),
+        }
     }
-}
 
-pub mod api {
-    use crate::toggl::*;
-
-    pub fn time_entries(toggl: &Toggl) -> Result<Vec<TimeEntry>, Error> {
-        let mut res = toggl
+    pub fn time_entries(&self) -> Result<Vec<TimeEntry>, Error> {
+        let mut res = self
             .client
             .get("https://www.toggl.com/api/v8/time_entries")
-            .basic_auth(&toggl.token, Some("api_token"))
+            .basic_auth(&self.token, Some("api_token"))
             .send()?;
         let entries = res.json::<Vec<TimeEntry>>()?;
         Ok(entries)
     }
 }
+
