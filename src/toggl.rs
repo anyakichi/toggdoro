@@ -48,4 +48,3 @@ impl Toggl {
         Ok(entries)
     }
 }
-

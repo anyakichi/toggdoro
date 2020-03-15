@@ -32,7 +32,7 @@ use toggdoro::notifier::mail::MailNotifier;
 use toggdoro::notifier::slack::SlackNotifier;
 use toggdoro::notifier::Notifier;
 use toggdoro::pomodoro::PomodoroMode;
-use toggdoro::toggl::{Toggl, TimeEntry};
+use toggdoro::toggl::{TimeEntry, Toggl};
 
 struct PomodoroState {
     npomodoros: u32,
@@ -362,7 +362,7 @@ fn main() -> Result<(), Error> {
         }
     });
 
-    let _ = thread::spawn(|| monitor());
+    thread::spawn(|| monitor());
 
     for stream in listener.incoming() {
         match stream {
