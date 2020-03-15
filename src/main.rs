@@ -1,5 +1,4 @@
 extern crate clap;
-#[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate lazy_static;
@@ -23,24 +22,16 @@ use std::{env, fs, process, thread, time};
 use chrono::{DateTime, Local};
 use clap::{App, Arg};
 use failure::Error;
-use lettre::{SendmailTransport, Transport};
-use lettre_email::Email;
 use regex::Regex;
-use slack_hook::{PayloadBuilder, Slack};
 use tinytemplate::TinyTemplate;
 
-mod config;
-use config::{Config, CONFIG};
-
-mod toggl;
-use toggl::TimeEntry;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum PomodoroMode {
-    Idle,
-    Work,
-    Break,
-}
+use toggdoro::config::{Config, CONFIG};
+use toggdoro::notifier::dbus::DBusNotifier;
+use toggdoro::notifier::mail::MailNotifier;
+use toggdoro::notifier::slack::SlackNotifier;
+use toggdoro::notifier::Notifier;
+use toggdoro::pomodoro::PomodoroMode;
+use toggdoro::toggl::{self, TimeEntry};
 
 struct PomodoroState {
     npomodoros: u32,
@@ -76,52 +67,6 @@ lazy_static! {
     static ref POMODORO_STATE: RwLock<PomodoroState> = RwLock::new(Default::default());
 }
 
-fn notify_by_dbus(config: &Config, msg: &str) -> Result<(), Error> {
-    if config.notification.dbus {
-        notify_rust::Notification::new()
-            .summary("Toggdoro")
-            .body(msg)
-            .show()
-            .map_err(|e| format_err!("{}", e))?;
-    }
-    Ok(())
-}
-
-fn notify_by_slack(config: &Config, msg: &str) -> Result<(), Error> {
-    if let Some(url) = config.notification.slack.as_ref() {
-        //let emoji = if mode == "Work" {
-        //    ":tomato:"
-        //} else {
-        //    ":coffee:"
-        //};
-        let slack = Slack::new(url as &str).map_err(|e| format_err!("{}", e))?;
-        let p = PayloadBuilder::new()
-            .username("toggdoro")
-            //.icon_emoji(emoji)
-            .text(msg)
-            .build()
-            .map_err(|e| format_err!("{}", e))?;
-
-        slack.send(&p).map_err(|e| format_err!("{}", e))?;
-    }
-    Ok(())
-}
-
-fn notify_by_mail(config: &Config, msg: &str) -> Result<(), Error> {
-    if let Some(to) = config.notification.mail.as_ref() {
-        let email = Email::builder()
-            .from("toggdoro@sopht.jp")
-            .to(to as &str)
-            .subject(msg)
-            .text("")
-            .build()?;
-
-        let mut mailer = SendmailTransport::new();
-        mailer.send(email.into())?;
-    }
-    Ok(())
-}
-
 fn mode_of_entry(entry: &TimeEntry) -> PomodoroMode {
     if entry.description == Some("Pomodoro Break".to_string()) {
         return PomodoroMode::Break;
@@ -143,7 +88,7 @@ fn task_min(entry: &TimeEntry) -> Result<Option<u32>, Error> {
     Ok(None)
 }
 
-fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
+fn update(toggl: &toggl::Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error> {
     let config = CONFIG.read().unwrap();
     let pomodoro_config = &config.pomodoro;
     let mut entries = toggl::api::time_entries(&toggl)?;
@@ -230,17 +175,17 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
         let dur_secs = duration.num_seconds();
 
         if dur_secs < 0 {
-            let msg = {
+            let (next, min) = {
                 if mode_of_entry(&latest_entry) == PomodoroMode::Break {
-                    format!("Work {} min", pomodoro_config.pomodoro_min)
+                    (PomodoroMode::Work, pomodoro_config.pomodoro_min)
                 } else {
-                    format!(
-                        "Break {} min",
+                    (
+                        PomodoroMode::Break,
                         if state.npomodoros >= pomodoro_config.long_break_after {
                             pomodoro_config.long_break_min
                         } else {
                             pomodoro_config.short_break_min
-                        }
+                        },
                     )
                 }
             };
@@ -249,9 +194,9 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
                 || (state.nnotifications == 1 && dur_secs < -300)
                 || (state.nnotifications == 2 && dur_secs < -1800)
             {
-                notify_by_dbus(&config, &msg)?;
-                notify_by_slack(&config, &msg)?;
-                notify_by_mail(&config, &msg)?;
+                for n in notifiers {
+                    n.notify(next, min)?;
+                }
                 state.nnotifications += 1;
             }
             state.ntnotifications = 0;
@@ -266,9 +211,9 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
                     || (state.ntnotifications == 1 && task_dur_secs < -300)
                     || (state.ntnotifications == 2 && task_dur_secs < -1800)
                 {
-                    notify_by_dbus(&config, "Switch to the next task")?;
-                    notify_by_slack(&config, "Switch to the next task")?;
-                    notify_by_mail(&config, "Switch to the next task")?;
+                    for n in notifiers {
+                        n.notify(PomodoroMode::Work, duration.num_minutes() as u32)?;
+                    }
                     state.ntnotifications += 1;
                 }
             } else {
@@ -280,13 +225,24 @@ fn update(toggl: &toggl::Toggl) -> Result<(), Error> {
 }
 
 fn monitor() {
+    let config = CONFIG.read().unwrap();
+
     let interval = time::Duration::from_secs(3);
-    let toggl = {
-        let config = CONFIG.read().unwrap();
-        toggl::new(config.toggl_token.to_string())
-    };
+    let toggl = { toggl::new(config.toggl_token.to_string()) };
+    let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
+    if config.notification.dbus {
+        notifiers.push(Box::new(DBusNotifier::new().unwrap()));
+    }
+    if let Some(url) = config.notification.slack.as_ref() {
+        notifiers.push(Box::new(SlackNotifier::new(url).unwrap()));
+    }
+    if let Some(to) = config.notification.mail.as_ref() {
+        notifiers.push(Box::new(
+            MailNotifier::new("toggdoro@localhost", to).unwrap(),
+        ));
+    }
     loop {
-        if let Err(e) = update(&toggl) {
+        if let Err(e) = update(&toggl, &notifiers) {
             println!("{}", e);
         }
         thread::sleep(interval);
