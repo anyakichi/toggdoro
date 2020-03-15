@@ -15,9 +15,7 @@ extern crate serde_json;
 extern crate tinytemplate;
 extern crate toml;
 
-use std::fs::File;
 use std::io::prelude::*;
-use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::RwLock;
 use std::{env, fs, process, thread, time};
@@ -31,135 +29,11 @@ use regex::Regex;
 use slack_hook::{PayloadBuilder, Slack};
 use tinytemplate::TinyTemplate;
 
+mod config;
+use config::{Config, CONFIG};
+
 mod toggl;
 use toggl::TimeEntry;
-
-#[derive(Debug, Default, Deserialize)]
-struct Config {
-    version: u8,
-    toggl_token: String,
-    socket: Option<String>,
-
-    #[serde(default)]
-    notification: NotificationConfig,
-
-    #[serde(default)]
-    pomodoro: PomodoroConfig,
-
-    #[serde(default)]
-    format: FormatConfig,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct NotificationConfig {
-    #[serde(default)]
-    dbus: bool,
-
-    mail: Option<String>,
-
-    slack: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PomodoroConfig {
-    #[serde(default = "default_pomodoro_min")]
-    pomodoro_min: u32,
-
-    #[serde(default = "default_short_break_min")]
-    short_break_min: u32,
-
-    #[serde(default = "default_long_break_min")]
-    long_break_min: u32,
-
-    #[serde(default = "default_long_break_after")]
-    long_break_after: u32,
-}
-
-fn default_pomodoro_min() -> u32 {
-    25
-}
-fn default_short_break_min() -> u32 {
-    5
-}
-fn default_long_break_min() -> u32 {
-    15
-}
-fn default_long_break_after() -> u32 {
-    4
-}
-
-impl Default for PomodoroConfig {
-    fn default() -> Self {
-        Self {
-            pomodoro_min: default_pomodoro_min(),
-            short_break_min: default_short_break_min(),
-            long_break_min: default_long_break_min(),
-            long_break_after: default_long_break_after(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct FormatConfig {
-    #[serde(default = "default_format_idle")]
-    idle: String,
-
-    #[serde(default = "default_format_work")]
-    work: String,
-
-    #[serde(default = "default_format_break")]
-    r#break: String,
-
-    #[serde(default = "default_format_work")]
-    overwork: String,
-
-    #[serde(default = "default_format_break")]
-    overbreak: String,
-
-    #[serde(default = "default_format_task")]
-    task_work: String,
-
-    #[serde(default = "default_format_task")]
-    task_break: String,
-
-    #[serde(default = "default_format_task")]
-    task_overwork: String,
-
-    #[serde(default = "default_format_task")]
-    task_overbreak: String,
-}
-
-impl Default for FormatConfig {
-    fn default() -> Self {
-        Self {
-            idle: default_format_idle(),
-            work: default_format_work(),
-            r#break: default_format_break(),
-            overwork: default_format_work(),
-            overbreak: default_format_break(),
-            task_work: default_format_task(),
-            task_break: default_format_task(),
-            task_overwork: default_format_task(),
-            task_overbreak: default_format_task(),
-        }
-    }
-}
-
-fn default_format_idle() -> String {
-    "idle".to_string()
-}
-
-fn default_format_work() -> String {
-    "Work {count}[{remaining_time}{task}]".to_string()
-}
-
-fn default_format_break() -> String {
-    "Break {count}[{remaining_time}{task}]".to_string()
-}
-
-fn default_format_task() -> String {
-    "|{remaining_time}".to_string()
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PomodoroMode {
@@ -199,7 +73,6 @@ struct Context {
 }
 
 lazy_static! {
-    static ref CONFIG: RwLock<Config> = RwLock::new(Default::default());
     static ref POMODORO_STATE: RwLock<PomodoroState> = RwLock::new(Default::default());
 }
 
@@ -487,19 +360,6 @@ fn handle_connection(mut stream: UnixStream) -> Result<(), Error> {
     Ok(())
 }
 
-fn load_config(path: &str) -> Result<(), Error> {
-    let mut c = CONFIG.write().unwrap();
-
-    let file = File::open(path)?;
-    let mut buf_reader = BufReader::new(file);
-    let mut contents = String::new();
-    buf_reader.read_to_string(&mut contents)?;
-    let config = toml::from_str(&contents)?;
-    *c = config;
-
-    Ok(())
-}
-
 fn main() -> Result<(), Error> {
     let matches = App::new("toggdoro")
         .version("0.1")
@@ -529,7 +389,7 @@ fn main() -> Result<(), Error> {
         .map(|x| x.to_string())
         .unwrap_or(home.to_string() + "/.config/toggdoro/config.toml");
 
-    load_config(&config_path)?;
+    Config::load(&config_path)?;
 
     let path = env::var("XDG_RUNTIME_DIR")
         .map(|x| x.to_string() + "/toggdoro.sock")
