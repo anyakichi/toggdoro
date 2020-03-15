@@ -16,7 +16,7 @@ pub struct TimeEntry {
     pub start: DateTime<Local>,
     pub stop: Option<DateTime<Local>>,
     pub duration: i32,
-    pub description: String,
+    pub description: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     pub duronly: bool,

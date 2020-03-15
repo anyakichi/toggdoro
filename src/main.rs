@@ -250,7 +250,7 @@ fn notify_by_mail(config: &Config, msg: &str) -> Result<(), Error> {
 }
 
 fn mode_of_entry(entry: &TimeEntry) -> PomodoroMode {
-    if entry.description == "Pomodoro Break" {
+    if entry.description == Some("Pomodoro Break".to_string()) {
         return PomodoroMode::Break;
     }
     if entry.tags.iter().any(|x| x == "pomodoro-break") {
