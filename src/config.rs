@@ -135,15 +135,15 @@ fn default_format_idle() -> String {
 }
 
 fn default_format_work() -> String {
-    "Work {count}[{remaining_time}{task}]".to_string()
+    "Work {{count}}[{{remaining_time}}{{task}}]".to_string()
 }
 
 fn default_format_break() -> String {
-    "Break {count}[{remaining_time}{task}]".to_string()
+    "Break {{count}}[{{remaining_time}}{{task}}]".to_string()
 }
 
 fn default_format_task() -> String {
-    "|{remaining_time}".to_string()
+    "|{{remaining_time}}".to_string()
 }
 
 lazy_static! {

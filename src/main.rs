@@ -11,20 +11,19 @@ extern crate slack_hook;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
-extern crate tinytemplate;
 extern crate toml;
 
 use std::io::prelude::*;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::{env, fs, process, thread, time};
 
 use chrono::{DateTime, Local};
 use clap::{App, Arg};
 use failure::Error;
+use handlebars::Handlebars;
 use regex::Regex;
 use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
-use tinytemplate::TinyTemplate;
 
 use toggdoro::config::{Config, CONFIG};
 use toggdoro::notifier::dbus::DBusNotifier;
@@ -250,19 +249,8 @@ fn monitor() {
     }
 }
 
-fn handle_connection(mut stream: UnixStream) -> Result<(), Error> {
+fn handle_connection(mut stream: UnixStream, templates: &Handlebars) -> Result<(), Error> {
     let config = CONFIG.read().unwrap();
-
-    let mut tt = TinyTemplate::new();
-
-    tt.add_template("Work", &config.format.work)?;
-    tt.add_template("Break", &config.format.r#break)?;
-    tt.add_template("overWork", &config.format.overwork)?;
-    tt.add_template("overBreak", &config.format.overbreak)?;
-    tt.add_template("WorkTask", &config.format.task_work)?;
-    tt.add_template("BreakTask", &config.format.task_break)?;
-    tt.add_template("overWorkTask", &config.format.task_overwork)?;
-    tt.add_template("overBreakTask", &config.format.task_overbreak)?;
 
     let state = POMODORO_STATE.read().unwrap();
     match state.mode {
@@ -288,7 +276,7 @@ fn handle_connection(mut stream: UnixStream) -> Result<(), Error> {
                     task: "".to_string(),
                 };
 
-                tt.render(&template, &context).unwrap()
+                templates.render(&template, &context)?
             } else {
                 "".to_string()
             };
@@ -310,7 +298,7 @@ fn handle_connection(mut stream: UnixStream) -> Result<(), Error> {
                 task: task,
             };
 
-            writeln!(stream, "{}", tt.render(&template, &context)?)?;
+            writeln!(stream, "{}", templates.render(&template, &context)?)?;
         }
     };
 
@@ -364,10 +352,26 @@ fn main() -> Result<(), Error> {
 
     thread::spawn(|| monitor());
 
+    let templates = Arc::new({
+        let mut t = Handlebars::new();
+        let config = CONFIG.read().unwrap();
+
+        t.register_template_string("Work", &config.format.work)?;
+        t.register_template_string("Break", &config.format.r#break)?;
+        t.register_template_string("overWork", &config.format.overwork)?;
+        t.register_template_string("overBreak", &config.format.overbreak)?;
+        t.register_template_string("WorkTask", &config.format.task_work)?;
+        t.register_template_string("BreakTask", &config.format.task_break)?;
+        t.register_template_string("overWorkTask", &config.format.task_overwork)?;
+        t.register_template_string("overBreakTask", &config.format.task_overbreak)?;
+        t
+    });
+
     for stream in listener.incoming() {
+        let templates = templates.clone();
         match stream {
             Ok(stream) => {
-                thread::spawn(|| handle_connection(stream));
+                thread::spawn(move || handle_connection(stream, &templates));
             }
             Err(err) => {
                 println!("accept failed: {:?}", err);
