@@ -25,6 +25,8 @@ struct PomodoroState {
     nnotifications: u32,
     ntnotifications: u32,
     mode: PomodoroMode,
+    description: String,
+    project: String,
     finish_time: DateTime<Local>,
     task_finish_time: Option<DateTime<Local>>,
 }
@@ -36,6 +38,8 @@ impl Default for PomodoroState {
             nnotifications: 0,
             ntnotifications: 0,
             mode: PomodoroMode::Idle,
+            description: "".to_string(),
+            project: "".to_string(),
             finish_time: Local::now(),
             task_finish_time: None,
         }
@@ -47,6 +51,9 @@ struct Context {
     count: u32,
     remaining_time: String,
     remaining_time_abs: String,
+    project: String,
+    description: String,
+    project_or_description: String,
     task: String,
 }
 
@@ -150,6 +157,13 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
                 duration -= v.1;
             }
         }
+        state.description = latest_entry.description.clone();
+        state.project = "".to_string();
+        if let Some(pid) = latest_entry.pid {
+            if let Some(project) = toggl.project(pid) {
+                state.project = project.name.clone();
+            }
+        }
         state.finish_time = latest_entry.start + chrono::Duration::seconds(duration as i64);
         state.task_finish_time = task_min(&latest_entry)?.map(|x| {
             latest_entry.start
@@ -243,9 +257,22 @@ fn handle_connection(mut stream: UnixStream, templates: &Handlebars) -> Result<(
     match state.mode {
         PomodoroMode::Idle => writeln!(stream, "{}", &config.format.idle)?,
         mode => {
-            let now = Local::now();
+            let mut context = Context {
+                count: state.npomodoros,
+                description: state.description.clone(),
+                project: state.project.clone(),
+                project_or_description: if state.project != "" {
+                    state.project.clone()
+                } else {
+                    state.description.clone()
+                },
+                remaining_time: "".to_string(),
+                remaining_time_abs: "".to_string(),
+                task: "".to_string(),
+            };
 
-            let task = if let Some(finish_time) = state.task_finish_time {
+            let now = Local::now();
+            if let Some(finish_time) = state.task_finish_time {
                 let duration = finish_time - now;
                 let timeover = duration.num_seconds() < 0;
                 let template = if timeover {
@@ -256,16 +283,10 @@ fn handle_connection(mut stream: UnixStream, templates: &Handlebars) -> Result<(
                 let mins = duration.num_minutes();
                 let secs = duration.num_seconds().abs() % 60;
 
-                let context = Context {
-                    count: state.npomodoros,
-                    remaining_time: format!("{:02}:{:02}", mins, secs),
-                    remaining_time_abs: format!("{:02}:{:02}", mins.abs(), secs),
-                    task: "".to_string(),
-                };
+                context.remaining_time = format!("{:02}:{:02}", mins, secs);
+                context.remaining_time_abs = format!("{:02}:{:02}", mins.abs(), secs);
+                context.task = templates.render(&template, &context)?;
 
-                templates.render(&template, &context)?
-            } else {
-                "".to_string()
             };
 
             let duration = state.finish_time - now;
@@ -278,12 +299,8 @@ fn handle_connection(mut stream: UnixStream, templates: &Handlebars) -> Result<(
             let mins = duration.num_minutes();
             let secs = duration.num_seconds().abs() % 60;
 
-            let context = Context {
-                count: state.npomodoros,
-                remaining_time: format!("{:02}:{:02}", mins, secs),
-                remaining_time_abs: format!("{:02}:{:02}", mins.abs(), secs),
-                task: task,
-            };
+            context.remaining_time = format!("{:02}:{:02}", mins, secs);
+            context.remaining_time_abs = format!("{:02}:{:02}", mins.abs(), secs);
 
             writeln!(stream, "{}", templates.render(&template, &context)?)?;
         }
