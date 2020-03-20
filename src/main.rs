@@ -1,18 +1,3 @@
-extern crate clap;
-extern crate failure;
-#[macro_use]
-extern crate lazy_static;
-extern crate lettre;
-extern crate lettre_email;
-extern crate notify_rust;
-extern crate regex;
-extern crate reqwest;
-extern crate slack_hook;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-extern crate toml;
-
 use std::io::prelude::*;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, RwLock};
@@ -22,7 +7,9 @@ use chrono::{DateTime, Local};
 use clap::{App, Arg};
 use failure::Error;
 use handlebars::Handlebars;
+use lazy_static::lazy_static;
 use regex::Regex;
+use serde_derive::Serialize;
 use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
 
 use toggdoro::config::{Config, CONFIG};

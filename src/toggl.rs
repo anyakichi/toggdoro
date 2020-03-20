@@ -1,5 +1,6 @@
 use chrono::{DateTime, Local};
 use failure::Error;
+use serde_derive::{Deserialize, Serialize};
 
 pub struct Toggl {
     token: String,

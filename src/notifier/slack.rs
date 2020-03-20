@@ -1,4 +1,4 @@
-use failure::Error;
+use failure::{format_err, Error};
 use slack_hook::{PayloadBuilder, Slack};
 
 use crate::notifier::Notifier;

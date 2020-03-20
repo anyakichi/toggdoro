@@ -2,6 +2,9 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::sync::RwLock;
 
+use lazy_static::lazy_static;
+use serde_derive::Deserialize;
+
 use failure::Error;
 
 #[derive(Debug, Default, Deserialize)]

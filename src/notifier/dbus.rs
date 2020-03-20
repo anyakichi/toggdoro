@@ -1,4 +1,4 @@
-use failure::Error;
+use failure::{format_err, Error};
 
 use crate::notifier::Notifier;
 use crate::pomodoro::PomodoroMode;
