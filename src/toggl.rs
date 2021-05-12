@@ -79,7 +79,7 @@ impl Toggl {
     pub fn projects(&self, pid: u64) -> Result<Project, Error> {
         let mut res = self
             .client
-            .get(&format!("https://www.toggl.com/api/v8/projects/{}", pid))
+            .get(&format!("https://api.track.toggl.com/api/v8/projects/{}", pid))
             .basic_auth(&self.token, Some("api_token"))
             .send()?;
         let project_data = res.json::<Data<Project>>()?;
@@ -89,7 +89,7 @@ impl Toggl {
     pub fn time_entries(&self) -> Result<Vec<TimeEntry>, Error> {
         let mut res = self
             .client
-            .get("https://www.toggl.com/api/v8/time_entries")
+            .get("https://api.track.toggl.com/api/v8/time_entries")
             .basic_auth(&self.token, Some("api_token"))
             .send()?;
         let entries = res.json::<Vec<TimeEntry>>()?;
