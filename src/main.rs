@@ -87,7 +87,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
     let pomodoro_config = &config.pomodoro;
     let mut entries = toggl.time_entries()?;
     let mut state = POMODORO_STATE.write().unwrap();
-    let mut history: Vec<(PomodoroMode, i32)> = Vec::new();
+    let mut history: Vec<(PomodoroMode, i64)> = Vec::new();
 
     state.mode = PomodoroMode::Idle;
 
@@ -105,7 +105,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
                     continue;
                 }
                 if latest_entry.description == x.description
-                    && latest_entry.pid == x.pid
+                    && latest_entry.project_id == x.project_id
                     && latest_entry.tags == x.tags
                 {
                     extra_task_duration += x.duration;
@@ -132,7 +132,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
             }
 
             if let Some(&(PomodoroMode::Break, d)) = history.last() {
-                if d >= (pomodoro_config.long_break_min as i32 * 60) {
+                if d >= (pomodoro_config.long_break_min as i64 * 60) {
                     history.pop();
                     break;
                 }
@@ -144,12 +144,12 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
         let mut duration = {
             if mode_of_entry(&latest_entry) == PomodoroMode::Break {
                 if state.npomodoros >= pomodoro_config.long_break_after {
-                    pomodoro_config.long_break_min as i32 * 60
+                    pomodoro_config.long_break_min as i64 * 60
                 } else {
-                    pomodoro_config.short_break_min as i32 * 60
+                    pomodoro_config.short_break_min as i64 * 60
                 }
             } else {
-                pomodoro_config.pomodoro_min as i32 * 60
+                pomodoro_config.pomodoro_min as i64 * 60
             }
         };
         if let Some(v) = history.first() {
@@ -158,12 +158,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
             }
         }
         state.description = latest_entry.description.clone();
-        state.project = "".to_string();
-        if let Some(pid) = latest_entry.pid {
-            if let Some(project) = toggl.project(pid) {
-                state.project = project.name.clone();
-            }
-        }
+        state.project = latest_entry.project_name.clone().unwrap_or_default();
         state.finish_time = latest_entry.start + chrono::Duration::seconds(duration as i64);
         state.task_finish_time = task_min(&latest_entry)?.map(|x| {
             latest_entry.start
