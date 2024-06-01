@@ -85,13 +85,13 @@ fn task_min(entry: &TimeEntry) -> Result<Option<u32>, Error> {
 fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error> {
     let config = CONFIG.read().unwrap();
     let pomodoro_config = &config.pomodoro;
-    let mut entries = toggl.time_entries()?;
+    let entries = toggl.time_entries()?;
     let mut state = POMODORO_STATE.write().unwrap();
     let mut history: Vec<(PomodoroMode, i64)> = Vec::new();
 
     state.mode = PomodoroMode::Idle;
 
-    if let Some(latest_entry) = entries.pop() {
+    if let Some(latest_entry) = entries.first() {
         if latest_entry.duration >= 0 {
             return Ok(());
         }
@@ -100,7 +100,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
         state.mode = mode_of_entry(&latest_entry);
 
         if state.mode == PomodoroMode::Work {
-            for x in entries.iter().rev() {
+            for x in &entries[1..] {
                 if mode_of_entry(x) == PomodoroMode::Break {
                     continue;
                 }
@@ -115,7 +115,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
             }
         }
 
-        for x in entries.iter().rev() {
+        for x in &entries[1..] {
             let mode = mode_of_entry(x);
 
             if let Some(stop) = x.stop {
@@ -281,7 +281,6 @@ fn handle_connection(mut stream: UnixStream, templates: &Handlebars) -> Result<(
                 context.remaining_time = format!("{:02}:{:02}", mins, secs);
                 context.remaining_time_abs = format!("{:02}:{:02}", mins.abs(), secs);
                 context.task = templates.render(&template, &context)?;
-
             };
 
             let duration = state.finish_time - now;
