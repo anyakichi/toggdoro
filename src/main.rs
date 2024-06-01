@@ -75,7 +75,7 @@ fn mode_of_entry(entry: &TimeEntry) -> PomodoroMode {
 fn task_min(entry: &TimeEntry) -> Result<Option<u32>, Error> {
     let re = Regex::new(r"^(\d+)min$")?;
     for tag in &entry.tags {
-        if let Some(cap) = re.captures(&tag) {
+        if let Some(cap) = re.captures(tag) {
             return Ok(Some(cap[1].parse()?));
         }
     }
@@ -97,7 +97,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
         }
         let mut last_start = &latest_entry.start;
         let mut extra_task_duration = 0;
-        state.mode = mode_of_entry(&latest_entry);
+        state.mode = mode_of_entry(latest_entry);
 
         if state.mode == PomodoroMode::Work {
             for x in &entries[1..] {
@@ -142,7 +142,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
         }
         state.npomodoros = (history.len() / 2 + 1) as u32;
         let mut duration = {
-            if mode_of_entry(&latest_entry) == PomodoroMode::Break {
+            if mode_of_entry(latest_entry) == PomodoroMode::Break {
                 if state.npomodoros >= pomodoro_config.long_break_after {
                     pomodoro_config.long_break_min as i64 * 60
                 } else {
@@ -153,16 +153,16 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
             }
         };
         if let Some(v) = history.first() {
-            if v.0 == mode_of_entry(&latest_entry) {
+            if v.0 == mode_of_entry(latest_entry) {
                 duration -= v.1;
             }
         }
-        state.description = latest_entry.description.clone();
+        state.description.clone_from(&latest_entry.description);
         state.project = latest_entry.project_name.clone().unwrap_or_default();
         state.finish_time = latest_entry.start + chrono::Duration::seconds(duration as i64);
-        state.task_finish_time = task_min(&latest_entry)?.map(|x| {
+        state.task_finish_time = task_min(latest_entry)?.map(|x| {
             latest_entry.start
-                + chrono::Duration::seconds(x as i64 * 60 - extra_task_duration as i64)
+                + chrono::Duration::seconds(x as i64 * 60 - extra_task_duration)
         });
 
         // notification
@@ -172,7 +172,7 @@ fn update(toggl: &Toggl, notifiers: &Vec<Box<dyn Notifier>>) -> Result<(), Error
 
         if dur_secs < 0 {
             let (next, min) = {
-                if mode_of_entry(&latest_entry) == PomodoroMode::Break {
+                if mode_of_entry(latest_entry) == PomodoroMode::Break {
                     (PomodoroMode::Work, pomodoro_config.pomodoro_min)
                 } else {
                     (
@@ -256,7 +256,7 @@ fn handle_connection(mut stream: UnixStream, templates: &Handlebars) -> Result<(
                 count: state.npomodoros,
                 description: state.description.clone(),
                 project: state.project.clone(),
-                project_or_description: if state.project != "" {
+                project_or_description: if !state.project.is_empty() {
                     state.project.clone()
                 } else {
                     state.description.clone()
@@ -340,7 +340,7 @@ fn main() -> Result<(), Error> {
 
     let listener = UnixListener::bind(&path)?;
 
-    let signals = Signals::new(&[SIGTERM, SIGINT])?;
+    let signals = Signals::new([SIGTERM, SIGINT])?;
     thread::spawn(move || {
         for _sig in signals.forever() {
             fs::remove_file(&path).unwrap();
@@ -348,7 +348,7 @@ fn main() -> Result<(), Error> {
         }
     });
 
-    thread::spawn(|| monitor());
+    thread::spawn(monitor);
 
     let templates = Arc::new({
         let mut t = Handlebars::new();
